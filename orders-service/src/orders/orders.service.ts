@@ -2,7 +2,8 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrderEventsProducer } from '../events/order-events.producer';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus as PrismaOrderStatus } from '@prisma/client';
+import { OrderStatus } from '../common';
 
 @Injectable()
 export class OrdersService {
@@ -24,15 +25,15 @@ export class OrdersService {
         userId: dto.userId,
         items: dto.items as any,
         total,
-        status: OrderStatus.PENDING,
+        status: OrderStatus.PENDING as any,
       },
     });
 
     this.logger.log(
-      `✅ Order created | id=${order.id} | userId=${order.userId} | total=$${total.toFixed(2)}`,
+      `✅ Pedido creado | id=${order.id} | userId=${order.userId} | total=$${total.toFixed(2)}`,
     );
 
-    // Fire async event — payments service will pick this up from the queue
+    // Disparar evento asíncrono — el servicio de pagos lo recogerá de la cola
     try {
       await this.eventsProducer.publishOrderCreated({
         orderId: order.id,
@@ -42,10 +43,10 @@ export class OrdersService {
       });
     } catch (error) {
       this.logger.error(
-        `❌ Failed to publish order.created event for order ${order.id}: ${error.message}`,
+        `❌ Error al publicar evento order.created para el pedido ${order.id}: ${error.message}`,
       );
-      // Order is already persisted, so we don't throw — but log the failure
-      // In production, you'd want a retry mechanism or outbox pattern here
+      // El pedido ya está persistido. En un sistema de producción real, 
+      // se usaría un Patrón Outbox para asegurar la consistencia eventual.
     }
 
     return order;
@@ -59,18 +60,18 @@ export class OrdersService {
 
   async findOne(id: string) {
     const order = await this.prisma.order.findUnique({ where: { id } });
-    if (!order) throw new NotFoundException(`Order ${id} not found`);
+    if (!order) throw new NotFoundException(`Pedido ${id} no encontrado`);
     return order;
   }
 
   async updateStatus(id: string, status: OrderStatus) {
     const order = await this.prisma.order.findUnique({ where: { id } });
-    if (!order) throw new NotFoundException(`Order ${id} not found`);
+    if (!order) throw new NotFoundException(`Pedido ${id} no encontrado`);
 
-    this.logger.log(`🔄 Updating order ${id} status → ${status}`);
+    this.logger.log(`🔄 Actualizando estado del pedido ${id} → ${status}`);
     return this.prisma.order.update({
       where: { id },
-      data: { status },
+      data: { status: status as unknown as PrismaOrderStatus },
     });
   }
 }

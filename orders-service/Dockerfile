@@ -4,16 +4,22 @@ RUN apk add --no-cache openssl
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm config set fetch-timeout 600000 \
-    && npm config set fetch-retry-mintimeout 20000 \
-    && npm config set fetch-retry-maxtimeout 120000 \
-    && npm install
+# Copy shared definitions first
+COPY common ./common
 
-COPY . .
-# Generate Prisma client based on schema
+# Copy service-specific files
+COPY orders-service/package*.json ./orders-service/
+WORKDIR /app/orders-service
+RUN npm install
+
+COPY orders-service/ .
+# Inject common files into src for easy importing if needed, 
+# or just rely on tsconfig. For simplicity in Docker, we copy it to a known path.
+RUN mkdir -p src/common && cp ../common/* src/common/
+
 RUN npx prisma generate
 RUN npm run build
+RUN npm prune --production
 
 # ─── Stage 2: Production ───────────────────────────────────────────────
 FROM node:20-alpine AS production
@@ -23,12 +29,13 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/orders-service/dist ./dist
+COPY --from=builder /app/orders-service/node_modules ./node_modules
+COPY --from=builder /app/orders-service/prisma ./prisma
+COPY --from=builder /app/orders-service/package*.json ./
 
 EXPOSE 3001
 
-# prisma db push syncs schema to DB without needing migration files
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/main"]
+# prisma db push is used here for simplicity in a demo/dev environment.
+# In a real production CI/CD, you should use 'prisma migrate deploy'.
+CMD ["sh", "-c", "npx prisma db push && node dist/main"]

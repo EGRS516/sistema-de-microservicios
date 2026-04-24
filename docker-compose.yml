@@ -50,8 +50,8 @@ services:
 
   orders-service:
     build:
-      context: ./orders-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: orders-service/Dockerfile
     container_name: delivery_orders
     env_file: ./orders-service/.env
     environment:
@@ -75,15 +75,14 @@ services:
 
   payments-service:
     build:
-      context: ./payments-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: payments-service/Dockerfile
     container_name: delivery_payments
     env_file: ./payments-service/.env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_PAYMENTS_USER}:${POSTGRES_PAYMENTS_PASSWORD}@postgres-payments:5432/${POSTGRES_PAYMENTS_DB}
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      ORDERS_SERVICE_URL: http://orders-service:3001
     ports:
       - '3002:3002'
     depends_on:
@@ -103,8 +102,8 @@ services:
 
   notifications-service:
     build:
-      context: ./notifications-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: notifications-service/Dockerfile
     container_name: delivery_notifications
     env_file: ./notifications-service/.env
     environment:
@@ -125,8 +124,8 @@ services:
 
   api-gateway:
     build:
-      context: ./api-gateway
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api-gateway/Dockerfile
     container_name: delivery_gateway
     env_file: ./api-gateway/.env
     environment:

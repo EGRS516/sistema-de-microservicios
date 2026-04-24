@@ -3,19 +3,14 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import Stripe from 'stripe';
 import { PrismaService } from '../prisma/prisma.service';
-import { PaymentStatus } from '@prisma/client';
-
-export interface OrderCreatedEvent {
-  orderId: string;
-  userId: string;
-  total: number;
-  items: Array<{
-    productId: string;
-    name: string;
-    quantity: number;
-    price: number;
-  }>;
-}
+import { PaymentStatus as PrismaPaymentStatus } from '@prisma/client';
+import { 
+  OrderCreatedEvent, 
+  PaymentProcessedEvent, 
+  PaymentStatus, 
+  QUEUES, 
+  EVENTS 
+} from '../common';
 
 @Injectable()
 export class PaymentsService {
@@ -24,25 +19,25 @@ export class PaymentsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    @InjectQueue('payment-events')
+    @InjectQueue(QUEUES.PAYMENT_EVENTS)
     private readonly paymentEventsQueue: Queue,
   ) {
     const stripeKey = process.env.STRIPE_SECRET_KEY;
 
     if (stripeKey && stripeKey !== 'sk_test_placeholder') {
       this.stripe = new Stripe(stripeKey, { apiVersion: '2023-10-16' as any });
-      this.logger.log('✅ Stripe initialized in TEST mode');
+      this.logger.log('✅ Stripe inicializado en modo TEST');
     } else {
       this.stripe = null;
       this.logger.warn(
-        '⚠️  STRIPE_SECRET_KEY not set — running in simulation mode (set key in payments-service/.env)',
+        '⚠️  STRIPE_SECRET_KEY no configurada — ejecutando en modo simulación (configura la clave en payments-service/.env)',
       );
     }
   }
 
   async processPayment(event: OrderCreatedEvent): Promise<void> {
     this.logger.log(
-      `💳 Processing payment | orderId=${event.orderId} | amount=$${event.total.toFixed(2)}`,
+      `💳 Procesando pago | orderId=${event.orderId} | monto=$${event.total.toFixed(2)}`,
     );
 
     let paymentStatus: PaymentStatus;
@@ -50,7 +45,6 @@ export class PaymentsService {
     let failureReason: string | undefined;
 
     if (this.stripe) {
-      // ── Real Stripe (Test Mode) ────────────────────────────────────
       try {
         const amountInCents = Math.round(event.total * 100);
 
@@ -78,10 +72,10 @@ export class PaymentsService {
       } catch (err: any) {
         paymentStatus = PaymentStatus.FAILED;
         failureReason = err.message;
-        this.logger.error(`❌ Stripe error: ${err.message}`);
+        this.logger.error(`❌ Error de Stripe: ${err.message}`);
       }
     } else {
-      // ── Simulation Mode ────────────────────────────────────────────
+      // ── Modo Simulación ────────────────────────────────────────────
       await new Promise((resolve) =>
         setTimeout(resolve, 400 + Math.random() * 300),
       );
@@ -92,84 +86,45 @@ export class PaymentsService {
         : undefined;
       failureReason = success
         ? undefined
-        : 'Insufficient funds (simulated)';
-      this.logger.log(`🎲 Simulated payment → ${paymentStatus}`);
+        : 'Fondos insuficientes (simulado)';
+      this.logger.log(`🎲 Pago simulado → ${paymentStatus}`);
     }
 
-    // ── Persist payment record ─────────────────────────────────────
+    // ── Persistir registro de pago ─────────────────────────────────
     const payment = await this.prisma.payment.upsert({
       where: { orderId: event.orderId },
       create: {
         orderId: event.orderId,
         amount: event.total,
-        status: paymentStatus,
+        status: paymentStatus as PrismaPaymentStatus,
         stripePaymentId,
         failureReason,
       },
-      update: { status: paymentStatus, stripePaymentId, failureReason },
+      update: { 
+        status: paymentStatus as PrismaPaymentStatus, 
+        stripePaymentId, 
+        failureReason 
+      },
     });
 
-    // ── Update Order status via HTTP ───────────────────────────────
-    const orderStatus =
-      paymentStatus === PaymentStatus.SUCCESS ? 'PAID' : 'CANCELLED';
+    // ── Publicar evento payment.processed ──────────────────────────
+    // Este evento será consumido por AMBOS: Servicio de Pedidos (para actualizar estado)
+    // y Servicio de Notificaciones (para avisar al usuario).
+    const eventPayload: PaymentProcessedEvent = {
+      orderId: event.orderId,
+      userId: event.userId,
+      paymentId: payment.id,
+      amount: event.total,
+      status: paymentStatus,
+      stripePaymentId,
+      failureReason,
+    };
 
-    const ordersUrl =
-      process.env.ORDERS_SERVICE_URL || 'http://localhost:3001';
-
-    const maxRetries = 3;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-
-        const res = await fetch(
-          `${ordersUrl}/orders/${event.orderId}/status`,
-          {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status: orderStatus }),
-            signal: controller.signal,
-          },
-        );
-
-        clearTimeout(timeout);
-
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
-
-        this.logger.log(
-          `🔄 Order ${event.orderId} status updated → ${orderStatus}`,
-        );
-        break;
-      } catch (err: any) {
-        this.logger.warn(
-          `⚠️ Failed to update order status (attempt ${attempt}/${maxRetries}): ${err.message}`,
-        );
-        if (attempt < maxRetries) {
-          await new Promise((r) => setTimeout(r, 1000 * attempt));
-        } else {
-          this.logger.error(
-            `❌ Could not update order ${event.orderId} status after ${maxRetries} attempts`,
-          );
-        }
-      }
-    }
-
-    // ── Publish payment.processed event ───────────────────────────
     await this.paymentEventsQueue.add(
-      'payment.processed',
+      EVENTS.PAYMENT_PROCESSED,
+      eventPayload,
       {
-        orderId: event.orderId,
-        userId: event.userId,
-        paymentId: payment.id,
-        amount: event.total,
-        status: paymentStatus,
-        stripePaymentId,
-        failureReason,
-      },
-      {
-        attempts: 3,
+        attempts: 5,
         backoff: { type: 'exponential', delay: 1000 },
         removeOnComplete: 100,
         removeOnFail: 50,
@@ -177,7 +132,7 @@ export class PaymentsService {
     );
 
     this.logger.log(
-      `📤 Event published: payment.processed | orderId=${event.orderId} | status=${paymentStatus}`,
+      `📤 Evento publicado: ${EVENTS.PAYMENT_PROCESSED} | orderId=${event.orderId} | estado=${paymentStatus}`,
     );
   }
 }

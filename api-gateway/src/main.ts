@@ -6,14 +6,15 @@ import { ExpressAdapter } from '@bull-board/express';
 import { Queue } from 'bullmq';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { v4 as uuidv4 } from 'uuid';
+import { QUEUES } from './common';
 
 async function bootstrap() {
-  // Disable body-parser so raw bodies pass through to proxied services
+  // Deshabilitar body-parser para que los cuerpos originales pasen a los servicios proxied
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
   const expressApp = app.getHttpAdapter().getInstance();
 
-  // ── Correlation ID Middleware ──────────────────────────────────────
+  // ── Middleware de Correlation ID ───────────────────────────────────
   expressApp.use((req: any, res: any, next: any) => {
     req.headers['x-request-id'] =
       req.headers['x-request-id'] || uuidv4();
@@ -21,7 +22,7 @@ async function bootstrap() {
     next();
   });
 
-  // ── Bull Board Dashboard ───────────────────────────────────────────
+  // ── Dashboard de Bull Board ────────────────────────────────────────
   const redisConnection = {
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379'),
@@ -33,10 +34,10 @@ async function bootstrap() {
   createBullBoard({
     queues: [
       new BullMQAdapter(
-        new Queue('order-events', { connection: redisConnection }),
+        new Queue(QUEUES.ORDER_EVENTS, { connection: redisConnection }),
       ),
       new BullMQAdapter(
-        new Queue('payment-events', { connection: redisConnection }),
+        new Queue(QUEUES.PAYMENT_EVENTS, { connection: redisConnection }),
       ),
     ] as any[],
     serverAdapter,
@@ -44,12 +45,11 @@ async function bootstrap() {
 
   expressApp.use('/admin/queues', serverAdapter.getRouter());
 
-  // ── Reverse Proxy Routes ───────────────────────────────────────────
+  // ── Rutas de Reverse Proxy ─────────────────────────────────────────
   const ordersTarget =
     process.env.ORDERS_SERVICE_URL || 'http://localhost:3001';
-  const paymentsTarget =
-    process.env.PAYMENTS_SERVICE_URL || 'http://localhost:3002';
 
+  // Solo el servicio de Pedidos (Orders) tiene API HTTP externa
   expressApp.use(
     '/orders',
     createProxyMiddleware({
@@ -57,35 +57,20 @@ async function bootstrap() {
       changeOrigin: true,
       onError: (err: any, _req: any, res: any) => {
         res.status(502).json({
-          error: 'Orders service unavailable',
+          error: 'Servicio de Pedidos no disponible',
           details: err.message,
         });
       },
     }),
   );
 
-  expressApp.use(
-    '/payments',
-    createProxyMiddleware({
-      target: paymentsTarget,
-      changeOrigin: true,
-      onError: (err: any, _req: any, res: any) => {
-        res.status(502).json({
-          error: 'Payments service unavailable',
-          details: err.message,
-        });
-      },
-    }),
-  );
-
-  // ── Root health check ──────────────────────────────────────────────
+  // ── Health check de la raíz ────────────────────────────────────────
   expressApp.get('/', (_req: any, res: any) => {
     res.json({
       service: 'API Gateway',
       status: 'healthy',
       routes: {
         orders: `${ordersTarget}/orders`,
-        payments: `${paymentsTarget}/payments`,
         bullBoard: '/admin/queues',
       },
     });
@@ -94,11 +79,10 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
   await app.listen(port);
 
-  console.log(`\n🚀 API Gateway ready`);
+  console.log(`\n🚀 API Gateway listo`);
   console.log(`   http://localhost:${port}`);
   console.log(`   📊 Bull Board → http://localhost:${port}/admin/queues`);
-  console.log(`   🛒 Orders    → ${ordersTarget}`);
-  console.log(`   💳 Payments  → ${paymentsTarget}\n`);
+  console.log(`   🛒 Pedidos    → ${ordersTarget}\n`);
 }
 
 bootstrap();
